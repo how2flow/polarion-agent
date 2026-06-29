@@ -1,0 +1,25 @@
+# Hidden files/directories (except .polarion-root, .gitignore, .env.example)
+.*
+!.polarion-root
+!.gitignore
+!.env.example
+
+# Logs
+**/logs/
+*.log
+
+# Editor/IDE
+*.swp
+*.swo
+*~
+*.bak
+*.tmp
+*.orig
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Runtime
+__pycache__/
+*.pyc
