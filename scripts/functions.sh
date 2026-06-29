@@ -13,6 +13,23 @@ warn()  { echo "[WARN]  $*" >&2; }
 error() { echo "[ERROR] $*" >&2; }
 ok()    { echo "[OK]    $*"; }
 
+# Echo $1, or interactively prompt for a Polarion document URL/target when empty.
+# Prompts only on an interactive TTY (never hangs under cron); returns empty
+# (non-zero) when no value and non-interactive.
+resolve_target() {
+    local t="$1" prompt="${2:-Enter Polarion document URL (or project/space/document): }"
+    if [ -z "$t" ]; then
+        if [ -t 0 ]; then
+            printf '%s' "$prompt" >&2
+            read -r t
+        else
+            return 1
+        fi
+    fi
+    [ -n "$t" ] || return 1
+    printf '%s' "$t"
+}
+
 # ============================================================
 # CLI detection
 # ============================================================

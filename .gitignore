@@ -8,6 +8,9 @@
 **/logs/
 *.log
 
+# Generated review reports
+projects/*/out/
+
 # Editor/IDE
 *.swp
 *.swo
@@ -23,3 +26,6 @@ Thumbs.db
 # Runtime
 __pycache__/
 *.pyc
+
+# Localized review outputs
+skills/*/out/

@@ -1,0 +1,97 @@
+{
+  "doctype": "ModuleDetailedDesignSpecification",
+  "source": {
+    "kind": "default-template",
+    "note": "Derived from a reference ModuleDetailedDesignSpecification document's governed REVIEW checklist."
+  },
+  "columns": [
+    "분류",
+    "리뷰 항목",
+    "리뷰 방법 및 판정 기준",
+    "리뷰 대상 (O/X)",
+    "판정 결과 (🟩Pass/🟥Fail)",
+    "리뷰어 의견",
+    "리뷰 결함 상태 및 결과 (🟡Open/⚫Closed)"
+  ],
+  "item_count": 13,
+  "items": [
+    {
+      "id": "C-001",
+      "category": "공통",
+      "item": "문서 작성 목적이 작성되어 있고, 올바른 문서의 올바른 버전을 참조하였는가?",
+      "criteria": "<참조문서 및 가이드 (References)> 및 <문서 작성 목적> 이 작성되어있는지 확인하고, 해당 모듈의 최신버전의 '모듈 구조 설계서'가 참조되었는지 확인"
+    },
+    {
+      "id": "C-002",
+      "category": "공통",
+      "item": "(기능안전 적용 시) 모듈 상세 설계에 적절한 notation 이 사용되었는가? - natural language, in-formal notation, semi-formal notation, formal notation",
+      "criteria": "ISO26262:2018 part 6. Table 5의 ASIL 등급에 따른 표기법을 사용하였는지 확인"
+    },
+    {
+      "id": "C-003",
+      "category": "공통",
+      "item": "(기능안전 적용 시) 모듈 상세 설계가 기능안전 단위 설계 및 구현을 위한 설계 원칙에 따라 설계 되었는가?",
+      "criteria": "ISO26262:2018 Part 6. Table 6의 ASIL 등급에 따른 설계 원칙을 준수하였는지 확인"
+    },
+    {
+      "id": "C-004",
+      "category": "전역변수",
+      "item": "각 모듈별로 관리할 전역변수가 정의되었는가?",
+      "criteria": "4. 전역 변수 (Global Variables) 가 올바르게 작성되어있는지 확인한다."
+    },
+    {
+      "id": "C-005",
+      "category": "함수사양",
+      "item": "모듈 구현을 위한 소프트웨어 유닛이 정의되고, 인터페이스 함수리스트 및 내부 함수리스트가 식별되었는가?",
+      "criteria": "모듈 구조 설계서의 인터렉션 뷰에서 식별된 인터페이스 컴포넌트들의 함수가 함수 사양에 정의되었는지 확인한다."
+    },
+    {
+      "id": "C-006",
+      "category": "함수사양",
+      "item": "소프트웨어 유닛 간 상호작용 및 의존관계가 식별되었는가?",
+      "criteria": "모듈 구조 설계서의 구현 뷰에서 식별된 컴포넌트들의 함수가 정의되었는지 확인한다."
+    },
+    {
+      "id": "C-007",
+      "category": "함수사양",
+      "item": "소프트웨어 유닛 간 동적 설계가 구조의 동적 설계와 일관성 있게 개발되었는가?",
+      "criteria": "모듈 구조 설계서의 런타임 뷰에서 식별된 컴포넌트들의 함수가 함수 사양에 정의되었는지 확인한다."
+    },
+    {
+      "id": "C-008",
+      "category": "함수사양",
+      "item": "각 함수는 관련된 모듈 구조 설계의 관련 ID와 올바르게 연결되었는가?",
+      "criteria": "함수와 관련 있는 모듈 구조 설계서의 인터렉션뷰 ID가 매핑된 것을 확인한다."
+    },
+    {
+      "id": "C-009",
+      "category": "함수사양",
+      "item": "모듈 상세 설계는 모듈 구조 설계와 일관성 있게 개발되었는가?",
+      "criteria": "모듈 구조 설계서의 인터렉션뷰와 모듈 상세 설계서의 함수가 서로 상반되거나, 다른 의미를 가지지 않고 동일한 내용을 그리고 있는지 확인한다."
+    },
+    {
+      "id": "C-010",
+      "category": "함수사양",
+      "item": "모듈 구조 설계는 모듈 상세 설계를, 모듈 상세 설계는 모듈 구조 설계를 추적하고 있는가?",
+      "criteria": "모듈 구조 설계서의 모든 인터렉션뷰 ID가 함수 ID와 매핑된 것을 확인한다."
+    },
+    {
+      "id": "C-011",
+      "category": "분류",
+      "item": "리뷰 항목",
+      "criteria": "리뷰 방법 및 판정 기준"
+    },
+    {
+      "id": "C-012",
+      "category": "부록. 상세설계 평가",
+      "item": "모듈 상세설계에 대한 평가가 이루어지고, 결함이 수정되었는가?",
+      "criteria": "HIS Metric 평가 항목 중 HIS_CCM, HIS_CYCLE, HIS_CALLING, HIS_CALLS에 대한 평가가 이루어지고, 그 결과가 첨부되었는지 확인한다. 기준을 만족하지 않는 항목에 대하여 상세설계가 수정되었는지 확인한다."
+    },
+    {
+      "id": "C-013",
+      "category": "추적성",
+      "item": "구현된 소스코드가 상세 설계 내용과 일치하는가?",
+      "criteria": "상세 설계서에 정의된 타입과 매크로가 소스코드로 작성된 내용과 일치하는지 확인한다. 상세 설계서에 작성된 전역변수의 내용이 소스코드로 작성되었는지 확인한다. 함수 사양으로 작성된 내용(proto-type, Function Scope, parameters, Return, Function Design) 이 소스코드와 일치하는지 확인한다."
+    }
+  ]
+}
