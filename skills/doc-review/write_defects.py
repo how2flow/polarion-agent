@@ -164,6 +164,8 @@ def find_defect_section_part(mcp, project, space, document):
         if r.get("_error"): return None
         for it in r.get("items", []):
             t = (it.get("title") or "") + " " + (it.get("content") or "")
+            # heading match is against live Polarion content: the defect section is
+            # titled "Inspection Defect" (EN) or "결함" (KO) — both literals required.
             if it.get("type") == "heading" and ("Inspection Defect" in t or "결함" in t):
                 return it.get("id")
         if not r.get("has_more"): break

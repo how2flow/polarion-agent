@@ -4,16 +4,19 @@ REVIEW work item, by SURGICALLY injecting the reviewer values into the original
 `checklist` HTML (preserving everything else). Deterministic plumbing; the AI
 only supplies the cell values (in the filled findings JSON).
 
-What it fills: per data row, the reviewer columns 리뷰대상(O/X) / 판정(Pass/Fail) /
-리뷰어의견 — by index [3,4,5]. It does NOT touch the template columns
-(분류/리뷰항목/판정기준 = [0,1,2]) or 결함상태([6], left to humans).
+What it fills: per data row, the reviewer columns applicable(O/X) / result(Pass/Fail) /
+comment — by index [3,4,5]. It does NOT touch the template columns
+(category/item/criteria = [0,1,2]) or defect-status([6], left to humans).
 
 Safety:
   (#2 lost-update) re-fetches the work item right before writing and verifies
        the template columns are unchanged vs what was reviewed; aborts on drift.
   (#3 structural) after injection, re-parses and asserts same row/col count and
        that columns [0,1,2,6] are byte-equal to the source; only [3,4,5] differ.
-  (#4) 결함상태 column is never written.
+  (#4) defect-status column is never written.
+  (#5 human-reviewed guard) a data row whose defect-status (open/closed) is
+       already filled was reviewed by a human — that row is left ENTIRELY
+       untouched (its applicable/result/comment are never overwritten).
   (#1 dry-run) --dry-run prints what would change and writes nothing.
 
 Auth: POLARION_URL + POLARION_TOKEN (env or <repo>/.env).
@@ -30,11 +33,15 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."
 import polarion_rest  # shared REST helper with ALM-seat-limit retry
 
 REST = None
-FILL_COLS = [3, 4, 5]          # 리뷰대상 / 판정 / 의견
-TEMPLATE_COLS = [0, 1, 2]      # 분류 / 리뷰항목 / 판정기준  (validate: must stay byte-identical in HTML)
-KEEP_COLS = [6]                # 결함상태 (left to humans)
-# lost-update compares row COUNT + only the short, verbatim-reproduced 분류 (col 0).
-# 리뷰항목 (col 1) and 판정기준 (col 2) can be long and get paraphrased/truncated by
+FILL_COLS = [3, 4, 5]          # applicable / result / comment
+TEMPLATE_COLS = [0, 1, 2]      # category / item / criteria  (validate: must stay byte-identical in HTML)
+KEEP_COLS = [6]                # defect-status (left to humans)
+# defect-status (open/closed) is human-owned and the AI review never writes it.
+# So a data row where this column is already filled means a human already
+# reviewed that row — we skip it entirely (never overwrite applicable/result/comment).
+HUMAN_REVIEW_COL = 6
+# lost-update compares row COUNT + only the short, verbatim-reproduced category (col 0).
+# item (col 1) and criteria (col 2) can be long and get paraphrased/truncated by
 # the AI in results[], so comparing them against the live checklist yields false
 # "drift". Count + category-sequence catches insert/delete/cross-category reorder;
 # structural integrity of what we actually write is enforced separately by
@@ -121,8 +128,10 @@ def split_rows(htmlstr):
 
 def inject(original, filled_rows):
     """filled_rows: list of dicts with applicable/result/comment, aligned to DATA rows.
-    Returns new html. Raises on row-count mismatch."""
+    Returns (new_html, skipped_idx). skipped_idx = data-row indices left untouched
+    because a human already reviewed them (defect-status filled). Raises on row-count mismatch."""
     data_idx = [0]            # index into filled_rows
+    skipped = []
     def repl_tr(m):
         tr = m.group(0)
         if re.search(r"<th\b", tr, flags=re.I):   # header row — leave as is
@@ -130,6 +139,12 @@ def inject(original, filled_rows):
         i = data_idx[0]; data_idx[0] += 1
         if i >= len(filled_rows):
             raise SystemExit(f"more data rows than filled entries ({i} >= {len(filled_rows)})")
+        # (#5) human-reviewed guard: defect-status (open/closed) already filled -> a
+        # human owns this row; leave it entirely untouched.
+        cells = cells_text(tr)
+        if len(cells) > HUMAN_REVIEW_COL and cells[HUMAN_REVIEW_COL].strip():
+            skipped.append(i)
+            return tr
         vals = {3: filled_rows[i].get("applicable", ""),
                 4: filled_rows[i].get("result", ""),
                 5: filled_rows[i].get("comment", "")}
@@ -145,7 +160,7 @@ def inject(original, filled_rows):
     new = re.sub(r"<tr\b.*?</tr>", repl_tr, original, flags=re.S | re.I)
     if data_idx[0] != len(filled_rows):
         raise SystemExit(f"row mismatch: {data_idx[0]} data rows vs {len(filled_rows)} filled entries")
-    return new
+    return new, skipped
 
 
 def validate(original, new):
@@ -220,9 +235,16 @@ def main():
     current_rows = split_rows(original)
     lost_update_check(filled, current_rows)                  # (#2)
 
-    new_html = inject(original, rows)                        # (#4: only cols 3,4,5)
+    new_html, skipped = inject(original, rows)               # (#4: only cols 3,4,5; #5: skip human-reviewed)
     validate(original, new_html)                             # (#3)
-    print(f"injection OK: {len(rows)} rows; template+결함상태 preserved; only 리뷰대상/판정/의견 written")
+    written = len(rows) - len(skipped)
+    print(f"injection OK: {len(rows)} rows; template+defect-status preserved; only applicable/result/comment written")
+    if skipped:
+        print(f"human-reviewed guard: {len(skipped)} row(s) left untouched "
+              f"(defect-status already filled) -> {written} row(s) written, rows {skipped} skipped")
+    if written == 0:
+        print("nothing to write: every row was already reviewed by a human — skipping PATCH")
+        return
 
     if args.from_file or args.dry_run:
         print("[dry-run] not writing. new HTML length:", len(new_html))
