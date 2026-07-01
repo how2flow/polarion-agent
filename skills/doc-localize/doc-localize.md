@@ -21,7 +21,7 @@ for the URL.
 
 ## Step 2 — Fetch the reviews (reuse the bundled script)
 ```
-python3 <skills/doc-review>/fetch_checklist.py \
+python3 skills/doc-review/fetch_checklist.py \
   --project <p> --space <s> --document <d> --doctype <type> \
   --review-wi <id from Step 1> --defect-wi <Ins_defect ids from Step 1> \
   --out <skills/doc-localize/out/.fetch-<YYYYMMDD-HHMMSS>.json>

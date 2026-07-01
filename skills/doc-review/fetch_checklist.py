@@ -22,9 +22,12 @@ Usage:
   fetch_checklist.py --project P --space S --document D [--doctype T] [--review-wi ID] [--out FILE]
   fetch_checklist.py --from-file wi_dump.json            # offline: test extraction on a cached @all dump
 """
-import argparse, json, os, re, sys, html
+import argparse, base64, json, os, re, sys, html
 from html.parser import HTMLParser
 from urllib import request, parse, error
+# polarion_rest is shared infra in <repo>/scripts — add it to the import path
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "scripts"))
+import polarion_rest  # shared REST helper with ALM-seat-limit retry
 
 REST = None  # set after URL resolved
 
@@ -54,14 +57,7 @@ def load_env():
 
 def rest_get(token, path, params=None):
     qs = ("?" + parse.urlencode(params)) if params else ""
-    req = request.Request(REST + path + qs, headers={
-        "Authorization": f"Bearer {token}", "Accept": "application/json"})
-    try:
-        with request.urlopen(req, timeout=30) as r:
-            return json.load(r)
-    except error.HTTPError as e:
-        body = e.read().decode("utf-8", "replace")[:300]
-        sys.exit(f"REST {e.code} on {path}: {body}")
+    return polarion_rest.get(token, REST + path + qs)   # seat-limit retry inside
 
 
 class _Table(HTMLParser):
@@ -130,6 +126,25 @@ def extract_defect(wi):
     }
 
 
+def my_user(token):
+    """Current user = the PAT's `sub` claim."""
+    p = token.split(".")[1]; p += "=" * (-len(p) % 4)
+    return json.loads(base64.urlsafe_b64decode(p)).get("sub")
+
+
+def owners_of(wi):
+    """reviewer + assignee user ids on a work item (matches write ownership gate)."""
+    rel = wi.get("data", {}).get("relationships", {})
+    ids = set()
+    for k in ("reviewer", "assignee"):
+        d = rel.get(k, {}).get("data")
+        if isinstance(d, dict): ids.add(d.get("id"))
+        elif isinstance(d, list):
+            for x in d: ids.add(x.get("id"))
+    ids.discard(None)
+    return ids
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--project"); ap.add_argument("--space"); ap.add_argument("--document")
@@ -158,17 +173,30 @@ def main():
                         "document_name": args.document, "doctype": args.doctype},
            "review_type": args.review_type, "checklist_field": args.checklist_field}
 
-    review_wis = [args.review_wi] if args.review_wi else \
+    review_wis = [x.strip() for x in args.review_wi.split(",") if x.strip()] if args.review_wi else \
         find_wis(token, args.project, args.space, args.document, args.review_type)
 
     if not review_wis:
         out["status"] = "no-review-wi"
     else:
-        wi_id = review_wis[0]
-        out["source_wi"] = wi_id
-        wi = rest_get(token, f"/projects/{args.project}/workitems/{wi_id}",
-                      {"fields[workitems]": "@all"})
-        status, payload = extract_checklist(wi, args.checklist_field)
+        # Pick the REVIEW work item the CURRENT USER owns (reviewer/assignee), so
+        # the write-back target matches the ownership gate. Deterministic — not an
+        # AI guess. Fall back to the first candidate (matched=False) if none match.
+        me = my_user(token)
+        chosen, chosen_wi, matched, cache = None, None, False, {}
+        for wid in review_wis:
+            w = rest_get(token, f"/projects/{args.project}/workitems/{wid}", {"fields[workitems]": "@all"})
+            cache[wid] = w
+            if me in owners_of(w):
+                chosen, chosen_wi, matched = wid, w, True
+                break
+        if chosen is None:
+            chosen, chosen_wi = review_wis[0], cache[review_wis[0]]
+        out["source_wi"] = chosen
+        out["source_wi_reviewer_matched"] = matched  # False -> ownership gate will reject the write
+        if len(review_wis) > 1:
+            out["review_wi_candidates"] = review_wis
+        status, payload = extract_checklist(chosen_wi, args.checklist_field)
         out["status"] = status
         out.update(payload)
 

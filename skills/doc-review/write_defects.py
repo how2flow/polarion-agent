@@ -25,10 +25,23 @@ Usage:
 """
 import argparse, base64, json, os, re, sys, html, subprocess, threading, time
 from urllib import request, error
+# polarion_rest is shared infra in <repo>/scripts — add it to the import path
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "scripts"))
+import polarion_rest  # shared REST helper with ALM-seat-limit retry
 
 REST = None
-LAUNCHER = os.path.join(os.path.dirname(os.path.abspath(__file__)), "mcp-polarion.sh")
 DEFECT_TYPE = "Ins_defect"
+
+
+def _repo_root():
+    root = os.path.dirname(os.path.abspath(__file__))
+    while root != "/" and not os.path.exists(os.path.join(root, ".polarion-root")):
+        root = os.path.dirname(root)
+    return root
+
+
+# The shared MCP launcher lives in <repo-root>/scripts/, not next to this script.
+LAUNCHER = os.path.join(_repo_root(), "scripts", "mcp-polarion.sh")
 
 
 def load_env():
@@ -66,20 +79,13 @@ def wi_owners(wi):
 def rest_get(token, path, params=None):
     from urllib import parse
     qs = ("?" + parse.urlencode(params)) if params else ""
-    req = request.Request(REST + path + qs, headers={
-        "Authorization": f"Bearer {token}", "Accept": "application/json"})
-    with request.urlopen(req, timeout=30) as r:
-        return json.load(r)
+    return polarion_rest.get(token, REST + path + qs)   # seat-limit retry inside
 
 
 def rest_patch_desc(token, project, wi_id, new_html):
-    body = json.dumps({"data": {"type": "workitems", "id": f"{project}/{wi_id}",
-                                "attributes": {"description": {"type": "text/html", "value": new_html}}}}).encode()
-    req = request.Request(REST + f"/projects/{project}/workitems/{wi_id}", data=body, method="PATCH",
-                          headers={"Authorization": f"Bearer {token}",
-                                   "Content-Type": "application/json", "Accept": "application/json"})
-    with request.urlopen(req, timeout=30) as r:
-        return r.status
+    body = {"data": {"type": "workitems", "id": f"{project}/{wi_id}",
+                     "attributes": {"description": {"type": "text/html", "value": new_html}}}}
+    return polarion_rest.patch(token, REST + f"/projects/{project}/workitems/{wi_id}", body)
 
 
 def detag(s):

@@ -19,6 +19,7 @@ LOG_DIR="$SKILL_DIR/schedule/logs"; mkdir -p "$LOG_DIR"
 OUT_DIR="$SKILL_DIR/out"; mkdir -p "$OUT_DIR"
 LOG="$LOG_DIR/$TS.log"
 
+wait_for_seat   # best-effort: wait for a free ALM seat before reading Polarion
 echo "=== doc-localize $TS | target: $TARGET ===" | tee "$LOG"
 if [ "$CLI_NAME" = "claude" ]; then
     "$CLI_BIN" -p "$(cat "$SKILL_DIR/doc-localize.md")

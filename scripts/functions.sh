@@ -124,6 +124,46 @@ require_polarion_config() {
     ok "Polarion: $POLARION_URL"
 }
 
+# Pre-gate: block until a Polarion ALM seat is free (poll GET /projects every
+# POLARION_SEAT_POLL s, up to POLARION_SEAT_WAIT s). 200 -> proceed. 401 with a
+# "concurrent users" body -> seat full, wait & retry. Any other result (bad
+# token, 5xx, timeout) -> proceed and let the pipeline surface the real error
+# (never loop forever on a dead token). Mirrors scripts/polarion_rest.py.
+# NOTE: floating seats are not reservable, so this only raises the odds the run
+# starts with a seat — the REST-level retry handles write-time seat loss.
+wait_for_seat() {
+    local poll="${POLARION_SEAT_POLL:-30}" max="${POLARION_SEAT_WAIT:-7200}"
+    local url tok ep resp code body start now
+    url="$(normalize_polarion_url "$POLARION_URL")"
+    tok="$POLARION_TOKEN"
+    if [ -z "$tok" ] || [ -z "$url" ]; then
+        warn "wait_for_seat: POLARION_URL/TOKEN not set — skipping seat pre-gate"
+        return 0
+    fi
+    ep="$url/polarion/rest/v1/projects?page%5Bsize%5D=1"
+    start=$(date +%s)
+    while true; do
+        resp=$(curl -sS -m 15 -w $'\n%{http_code}' -H "Authorization: Bearer $tok" "$ep" 2>/dev/null)
+        code="${resp##*$'\n'}"; body="${resp%$'\n'*}"
+        if [ "$code" = "200" ]; then
+            ok "seat available — starting"
+            return 0
+        fi
+        now=$(date +%s)
+        if [ $((now - start)) -ge "$max" ]; then
+            warn "wait_for_seat: no seat within ${max}s (last code=$code) — proceeding anyway"
+            return 0
+        fi
+        if [ "$code" = "401" ] && printf '%s' "$body" | grep -qi "concurrent"; then
+            info "[seat] ALM concurrent-user limit; waiting ${poll}s (elapsed $((now-start))s / ${max}s)"
+            sleep "$poll"
+        else
+            warn "wait_for_seat: unexpected response (code=$code) — proceeding; pipeline will surface any real error"
+            return 0
+        fi
+    done
+}
+
 # ============================================================
 # CLI validation
 # ============================================================

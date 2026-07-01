@@ -25,6 +25,9 @@ Usage:
 import argparse, base64, json, os, re, sys, html
 from html.parser import HTMLParser
 from urllib import request, error
+# polarion_rest is shared infra in <repo>/scripts — add it to the import path
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "scripts"))
+import polarion_rest  # shared REST helper with ALM-seat-limit retry
 
 REST = None
 FILL_COLS = [3, 4, 5]          # 리뷰대상 / 판정 / 의견
@@ -94,20 +97,13 @@ def wi_owners(wi):
 
 
 def fetch_wi(token, project, wi_id):
-    req = request.Request(REST + f"/projects/{project}/workitems/{wi_id}?fields%5Bworkitems%5D=%40all",
-                          headers={"Authorization": f"Bearer {token}", "Accept": "application/json"})
-    with request.urlopen(req, timeout=30) as r:
-        return json.load(r)
+    return polarion_rest.get(token, REST + f"/projects/{project}/workitems/{wi_id}?fields%5Bworkitems%5D=%40all")
 
 
 def patch_checklist(token, project, wi_id, new_html):
-    body = json.dumps({"data": {"type": "workitems", "id": f"{project}/{wi_id}",
-                                "attributes": {"checklist": {"type": "text/html", "value": new_html}}}}).encode()
-    req = request.Request(REST + f"/projects/{project}/workitems/{wi_id}", data=body, method="PATCH",
-                          headers={"Authorization": f"Bearer {token}",
-                                   "Content-Type": "application/json", "Accept": "application/json"})
-    with request.urlopen(req, timeout=30) as r:
-        return r.status
+    body = {"data": {"type": "workitems", "id": f"{project}/{wi_id}",
+                     "attributes": {"checklist": {"type": "text/html", "value": new_html}}}}
+    return polarion_rest.patch(token, REST + f"/projects/{project}/workitems/{wi_id}", body)
 
 
 def cells_text(tr_html):

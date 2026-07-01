@@ -57,6 +57,9 @@ run_agent() {  # $1 = prompt ; $2.. = allowedTools (claude only)
 
 echo "=== reviewer $TS | target: $TARGET ===" | tee "$LOG"
 
+# wait for a free ALM seat before touching Polarion (best-effort pre-gate)
+wait_for_seat
+
 # --- Stage 1: doc-review (reads Polarion once; ~1 seat) ---
 info "Stage 1: doc-review (read + review)"
 run_agent "$(cat "$REVIEW_MD")
@@ -70,9 +73,15 @@ Fetch script (run with Bash, python3): $FETCH
 Write the fetched checklist JSON to: $CHECKLIST
 Write the document content snapshot to: $CONTENT
 Write the findings JSON to: $FINDINGS
-Identify the review work item id from the document parts and pass it to the
-fetch script as --review-wi; likewise pass any Ins_defect ids as --defect-wi
-(more robust than its discovery query). Then stop." \
+Identify ALL review work item ids from the document parts and pass them
+comma-separated as --review-wi (fetch_checklist deterministically picks the one
+the current user owns as source_wi); likewise pass any Ins_defect ids as
+--defect-wi (more robust than its discovery query).
+You MUST write $FINDINGS (a filled checklist) before stopping. Do NOT stop to ask
+questions: if there are multiple REVIEW work items or any other ambiguity, choose
+a sensible default (prefer the REVIEW WI whose reviewer is the current user),
+note the choice, and proceed. Writing $CONTENT/$CHECKLIST but not $FINDINGS is a
+failure. Then stop." \
     Bash Read Write "mcp__polarion__*"
 [ -s "$CONTENT" ]  || { error "no content snapshot produced. Aborting."; exit 1; }
 [ -s "$FINDINGS" ] || { error "no findings produced. Aborting."; exit 1; }

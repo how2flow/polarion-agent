@@ -20,6 +20,7 @@ LOG="$LOG_DIR/$TS.log"
 CONTENT="$LOG_DIR/.content-$TS.md"
 FINDINGS="$LOG_DIR/.findings-$TS.json"
 
+wait_for_seat   # best-effort: wait for a free ALM seat before reading Polarion
 echo "=== doc-review $TS | target: $TARGET ===" | tee "$LOG"
 if [ "$CLI_NAME" = "claude" ]; then
     "$CLI_BIN" -p "$(cat "$SKILL_DIR/doc-review.md")

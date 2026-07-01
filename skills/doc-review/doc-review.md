@@ -8,6 +8,18 @@ explicit fallback below). Uses `mcp__polarion__*` to read and the bundled
 **READ-ONLY.** Never call a Polarion write tool (`create_*`, `update_*`,
 `move_*`). Do not fill the `verdict` field — that is `doc-verify`'s job.
 
+**AUTONOMOUS COMPLETION (this skill usually runs headless — no human to answer
+mid-run).** Never stop to ask a question. Resolve every ambiguity with a
+documented default and **continue through to the findings JSON**. Producing the
+content snapshot / checklist but **not** the findings JSON is a failure. If you
+must make a choice, make it, note it in the output, and proceed.
+
+**Multiple REVIEW work items is normal** (peer review has 2+ reviewers). Pass
+**all** of their ids to `fetch_checklist.py` (comma-separated `--review-wi`); it
+**deterministically** selects the one the **current user owns**
+(reviewer/assignee) as `source_wi`, so the write-back target matches the
+ownership gate. Do not pause to ask which.
+
 ## Input (target)
 - a Polarion document URL (`%20` → space when decoding the name),
 - `project_id / space_id / document_name`, or
@@ -30,9 +42,9 @@ pipeline reuse it without re-reading Polarion).
 Run the bundled script (it pulls raw data and emits a status; it does **not**
 decide criteria):
 ```
-python3 <skills/doc-review>/fetch_checklist.py \
+python3 skills/doc-review/fetch_checklist.py \
   --project <p> --space <s> --document <d> --doctype <type> \
-  [--review-wi <id you saw in Step 1>] \
+  [--review-wi <ALL review WI ids from Step 1, comma-separated>] \
   [--defect-wi <comma-separated Ins_defect ids you saw in Step 1>] \
   --out .review-checklist-<doctype>-<YYYYMMDD-HHMMSS>.json
 ```
