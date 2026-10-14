@@ -1,0 +1,86 @@
+{
+  "_comment": [
+    "Instance/organization-specific names live HERE, not in code.",
+    "A profile is selected by the target document's project_id (match.project_ids);",
+    "if none matches, default_profile is used and a warning is printed.",
+    "To support another project or another checklist dialect, add a profile —",
+    "no script changes should be needed."
+  ],
+  "default_profile": "telechips-bsp",
+  "profiles": {
+    "telechips-bsp": {
+      "description": "Telechips BSP module documents (Korean ASPICE checklists)",
+      "match": {
+        "project_ids": [
+          "bsp_module"
+        ]
+      },
+      "work_item_types": {
+        "review": "REVIEW",
+        "defect": "Ins_defect"
+      },
+      "checklist_field": "checklist",
+      "_fail_count_field": [
+        "Work item field holding the number of failed checklist items.",
+        "The writer sets it from the table it just wrote, so the count and",
+        "the checklist can never disagree. Omit it to leave the field alone."
+      ],
+      "fail_count_field": "fail",
+      "_column_roles": [
+        "How to find each reviewer column in a checklist header row.",
+        "'require' must appear in the header cell, 'forbid' must not.",
+        "'판정' appears in BOTH '리뷰 방법 및 판정 기준' (template) and '판정 결과'",
+        "(reviewer), so result forbids '기준'. Each role must resolve to exactly",
+        "one column or the layout is rejected and no write happens."
+      ],
+      "column_roles": {
+        "applicable": {
+          "require": "대상"
+        },
+        "result": {
+          "require": "판정",
+          "forbid": "기준"
+        },
+        "comment": {
+          "require": "의견"
+        },
+        "defect_status": {
+          "require": "결함"
+        }
+      },
+      "_template_columns": [
+        "Which of the non-reviewer columns carry the item identity. Used to",
+        "compare a document's checklist against the official template (match rows",
+        "by 'item', report a changed 'criteria'). 'category' may be absent — the",
+        "functional-test layout has no 분류 column."
+      ],
+      "template_columns": {
+        "category": "분류",
+        "item": "항목",
+        "criteria": "기준"
+      },
+      "_defect_section_headings": "Headings under which a new defect work item is filed (§7.4).",
+      "defect_section_headings": [
+        "Inspection Defect",
+        "결함"
+      ],
+      "_templates": [
+        "The organization's official template documents. Their REVIEW checklists",
+        "are fetched at review time and compared against the target document's",
+        "checklist, so an out-of-date document checklist can be reported.",
+        "They also serve as the tier-2 fallback checklist when a document has no",
+        "governed checklist of its own."
+      ],
+      "templates": {
+        "project_id": "Guide",
+        "space_id": "Template_Module",
+        "doctypes": {
+          "ModuleRequirementsSpecification": "Template1_Module Requirements Specification",
+          "ModuleArchitecturalDesignSpecification": "Template2_Module Architectural Design",
+          "ModuleDetailedDesignSpecification": "Template3_Module Detailed Design2",
+          "Module_Function_Test_Specification": "Template4_modyul gineungteseuteu myeongseseo"
+        }
+      }
+    }
+  }
+}

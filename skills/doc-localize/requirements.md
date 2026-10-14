@@ -1,8 +1,8 @@
 # doc-localize — Requirements
 
 ## Purpose
-Fetch the reviews left on **any** Polarion document (the filled checklist 판정/
-리뷰어 의견 + inspection-defect descriptions) and produce a **Korean** local copy
+Fetch the reviews left on **any** Polarion document (the filled checklist
+result/comment cells + inspection-defect descriptions) and produce a **Korean** local copy
 for reading. The reviews are authored in English by the review workflow; this
 skill localizes them so a Korean reader can review them offline.
 
@@ -11,7 +11,7 @@ skill localizes them so a Korean reader can review them offline.
 - Works on **any** document that has reviews — independent of a review run
   (fetch-based, not tied to a local findings JSON).
 - **Already-Korean text is kept verbatim** (only non-Korean reviewer text is
-  translated). Source checklist text (분류/항목/판정기준) is always kept as-is.
+  translated). Source checklist text (category/item/criteria) is always kept as-is.
 
 ## Inputs
 - A Polarion document URL, or `project / space / document` (prompt if missing).
@@ -20,9 +20,12 @@ skill localizes them so a Korean reader can review them offline.
 1. Resolve the doc; via `read_document_parts` find the REVIEW work item id(s) and
    any `Ins_defect` ids.
 2. Reuse `skills/doc-review/fetch_checklist.py` to fetch the checklist rows
-   (filled 판정/의견) + `inspection_defects`.
-3. Localize reviewer 의견 + defect descriptions to Korean (skip text already in
-   Korean); keep 분류/항목/판정기준 verbatim.
+   (filled result/comment) + `inspection_defects`. Locate those cells through
+   the `columns.roles` map it emits — the column layout is doctype-specific
+   (7 columns for requirement/design docs, 6 for functional test specs), so a
+   fixed column number reads the wrong cell.
+3. Localize reviewer comments + defect descriptions to Korean (skip text already
+   in Korean); keep category/item/criteria verbatim.
 4. Save a Korean report to `skills/doc-localize/out/` (gitignored).
 
 ## Tools

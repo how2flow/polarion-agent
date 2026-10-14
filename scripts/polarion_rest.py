@@ -15,7 +15,27 @@ Used by fetch_checklist.py / write_checklist.py / write_defects.py at the exact
 fetch/write moments (the only points that consume a seat).
 """
 import json, os, sys, time
-from urllib import request, error
+from urllib import parse, request, error
+
+
+def seg(v):
+    """Percent-encode one URL path segment.
+
+    An id carrying a space or control character makes http.client raise
+    InvalidURL, which subclasses HTTPException — not ValueError, OSError or
+    URLError — so nothing below catches it."""
+    return parse.quote(str(v), safe="")
+
+SEAT_EXHAUSTED = "seat-limit persisted beyond"
+
+
+def is_seat_exhausted(err):
+    """True when `err` is the exit raised after the whole wait budget is gone.
+
+    Re-raise it only where nothing has been produced yet: once a seat has
+    already bought results, discarding them to report the timeout is worse."""
+    return SEAT_EXHAUSTED in str(err)
+
 
 SEAT_POLL = int(os.environ.get("POLARION_SEAT_POLL", "30"))
 SEAT_WAIT = int(os.environ.get("POLARION_SEAT_WAIT", "7200"))  # 2 hours
@@ -52,7 +72,8 @@ def call(method, url, token, body=None):
                 time.sleep(SEAT_POLL)
                 continue
             if is_seat_limited(e.code, eb):
-                sys.exit(f"seat-limit persisted beyond {SEAT_WAIT}s budget on {method} {url.split('?')[0]} — giving up")
+                sys.exit(f"{SEAT_EXHAUSTED} {SEAT_WAIT}s budget on "
+                         f"{method} {url.split('?')[0]} — giving up")
             sys.exit(f"REST {e.code} on {method} {url.split('?')[0]}: {eb[:200]}")
         except error.URLError as e:
             sys.exit(f"REST transport error on {method} {url.split('?')[0]}: {e}")

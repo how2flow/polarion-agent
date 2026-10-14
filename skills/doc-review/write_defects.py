@@ -24,10 +24,11 @@ Usage:
   write_defects.py --filled findings.json --from-file defect_dump.json --dry-run  # offline test
 """
 import argparse, base64, json, os, re, sys, html, subprocess, threading, time
-from urllib import request, error
 # polarion_rest is shared infra in <repo>/scripts — add it to the import path
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "scripts"))
 import polarion_rest  # shared REST helper with ALM-seat-limit retry
+from polarion_rest import seg
+import polarion_config as cfg  # instance/org profile
 
 REST = None
 DEFECT_TYPE = "Ins_defect"
@@ -64,6 +65,10 @@ def my_user(token):
     return json.loads(base64.urlsafe_b64decode(p)).get("sub")
 
 
+def wi_type(wi):
+    return (wi.get("data", {}).get("attributes", {}) or {}).get("type", "")
+
+
 def wi_owners(wi):
     rel = wi.get("data", {}).get("relationships", {})
     ids = set()
@@ -85,7 +90,7 @@ def rest_get(token, path, params=None):
 def rest_patch_desc(token, project, wi_id, new_html):
     body = {"data": {"type": "workitems", "id": f"{project}/{wi_id}",
                      "attributes": {"description": {"type": "text/html", "value": new_html}}}}
-    return polarion_rest.patch(token, REST + f"/projects/{project}/workitems/{wi_id}", body)
+    return polarion_rest.patch(token, REST + f"/projects/{seg(project)}/workitems/{seg(wi_id)}", body)
 
 
 def detag(s):
@@ -155,7 +160,7 @@ class MCP:
         except Exception: pass
 
 
-def find_defect_section_part(mcp, project, space, document):
+def find_defect_section_part(mcp, project, space, document, headings=None):
     """Best-effort: part id of the '§7.4 Inspection Defect' heading, for positioning."""
     page = 1
     while True:
@@ -164,9 +169,9 @@ def find_defect_section_part(mcp, project, space, document):
         if r.get("_error"): return None
         for it in r.get("items", []):
             t = (it.get("title") or "") + " " + (it.get("content") or "")
-            # heading match is against live Polarion content: the defect section is
-            # titled "Inspection Defect" (EN) or "결함" (KO) — both literals required.
-            if it.get("type") == "heading" and ("Inspection Defect" in t or "결함" in t):
+            # heading match is against live Polarion content; the titles come
+            # from the profile (defect_section_headings), not from code.
+            if it.get("type") == "heading" and any(h in t for h in (headings or ["Inspection Defect", "결함"])):
                 return it.get("id")
         if not r.get("has_more"): break
         page += 1
@@ -174,11 +179,12 @@ def find_defect_section_part(mcp, project, space, document):
     return None
 
 
-def create_defect(mcp, project, space, document, title, description, dry_run):
+def create_defect(mcp, project, space, document, title, description, dry_run,
+                  defect_type=DEFECT_TYPE, headings=None):
     """Create an Ins_defect work item (title + description ONLY — all standard
     fields like severity/assignee/due/safety-relevance are left to the type's
     Polarion defaults / the human) and move it into the document's defect section."""
-    ci = mcp.tool("create_work_item", {"project_id": project, "title": title, "type": DEFECT_TYPE,
+    ci = mcp.tool("create_work_item", {"project_id": project, "title": title, "type": defect_type,
                                        "description": description, "dry_run": dry_run})
     if ci.get("_error"):
         return None, ci["_error"]
@@ -187,7 +193,7 @@ def create_defect(mcp, project, space, document, title, description, dry_run):
         return wid or "(dry-run)", "created (dry-run)"
     if not wid:
         return None, f"create returned no id: {json.dumps(ci, ensure_ascii=False)[:160]}"
-    prev = find_defect_section_part(mcp, project, space, document)
+    prev = find_defect_section_part(mcp, project, space, document, headings)
     mv = {"project_id": project, "work_item_id": wid, "target_space_id": space,
           "target_document_name": document, "dry_run": dry_run}
     if prev: mv["previous_part_id"] = prev
@@ -200,6 +206,11 @@ def create_defect(mcp, project, space, document, title, description, dry_run):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--filled", required=True)
+    ap.add_argument("--profile", default="", help="config profile (default: matched by project)")
+    ap.add_argument("--review-type", default=None,
+                    help="type the source_wi must be (ownership gate; default: profile)")
+    ap.add_argument("--defect-type", default=None,
+                    help="work item type this script may write/create (default: profile)")
     ap.add_argument("--dry-run", action="store_true")
     ap.add_argument("--from-file", default="", help="offline: single defect @all dump for plan() test")
     args = ap.parse_args()
@@ -235,11 +246,18 @@ def main():
 
     global REST
     url, token = load_env(); REST = url + "/polarion/rest/v1"
+    prof = cfg.profile_for(project_id=project, name=args.profile or None)
+    review_type = args.review_type or cfg.review_type(prof)
+    defect_type = args.defect_type or cfg.defect_type(prof)
     if not (project and review_wi):
         sys.exit("filled JSON needs document.project_id + source_wi")
 
-    # ownership gate on the REVIEW work item
-    rwi = rest_get(token, f"/projects/{project}/workitems/{review_wi}", {"fields[workitems]": "@all"})
+    # ownership gate on the REVIEW work item (must actually BE one)
+    rwi = rest_get(token, f"/projects/{seg(project)}/workitems/{seg(review_wi)}",
+                   {"fields[workitems]": "@all"})
+    if wi_type(rwi) != review_type:
+        sys.exit(f"TYPE: source_wi {project}/{review_wi} is type '{wi_type(rwi) or '(unknown)'}', "
+                 f"not '{review_type}' — refusing to write")
     owners = wi_owners(rwi); me = my_user(token)
     if not owners:
         sys.exit("OWNERSHIP: review work item has no reviewer/assignee — refusing to write")
@@ -265,13 +283,20 @@ def main():
                 print(f"[{j['item']}] needs-new but document space/name missing -> skip"); continue
             if mcp is None:
                 mcp = MCP()
-            wid, note = create_defect(mcp, project, space, document, title, j["content"], args.dry_run)
+            wid, note = create_defect(mcp, project, space, document, title, j["content"],
+                                      args.dry_run, defect_type,
+                                      cfg.defect_headings(prof))
             existing_titles.add(title)  # avoid duplicate creates within this run
             print(f"[{j['item']}] CREATE {'(dry-run) ' if args.dry_run else ''}{note}")
             continue
         if not j["target"]:
             print(f"[{j['item']}] action={act} but no target defect WI -> skip"); continue
-        dwi = rest_get(token, f"/projects/{project}/workitems/{j['target']}", {"fields[workitems]": "@all"})
+        dwi = rest_get(token, f"/projects/{seg(project)}/workitems/{seg(j['target'])}",
+                       {"fields[workitems]": "@all"})
+        if wi_type(dwi) != defect_type:
+            print(f"[{j['item']}->{j['target']}] TYPE: target is '{wi_type(dwi) or '(unknown)'}', "
+                  f"not '{defect_type}' -> skip (refusing to write)")
+            continue
         cur = dwi["data"]["attributes"].get("description", {})
         cur = cur.get("value", "") if isinstance(cur, dict) else (cur or "")
         do, new, note = plan(cur, j["action"], j["content"])

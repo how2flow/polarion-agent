@@ -6,11 +6,13 @@ only supplies the cell values (in the filled findings JSON).
 
 What it fills: per data row, the reviewer columns applicable(O/X) / result(Pass/Fail)
 / comment. Their indices are NOT hardcoded — the checklist layout is
-doctype-specific (7 columns with 분류, 6 without), so every column's role is
+doctype-specific (7 columns with a category, 6 without), so every column's role is
 resolved from the header row via scripts/checklist_columns.py. Template columns
 and defect-status (human-owned) are never touched.
 
 Safety:
+  (#6 type) the target must be a REVIEW work item (--review-type, default
+       REVIEW); any other type aborts. This script writes nothing else.
   (#0 layout) column roles are resolved from the LIVE header at write time and
        compared against the roles recorded at fetch time; an unresolvable header
        or any role that moved aborts the write (never falls back to a guess).
@@ -33,12 +35,12 @@ Usage:
   write_checklist.py --from-file wi_dump.json --filled filled.json --dry-run   # offline test
 """
 import argparse, base64, json, os, re, sys, html
-from html.parser import HTMLParser
-from urllib import request, error
 # polarion_rest is shared infra in <repo>/scripts — add it to the import path
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "scripts"))
 import polarion_rest  # shared REST helper with ALM-seat-limit retry
+from polarion_rest import seg
 import checklist_columns  # header-driven column roles (layout varies by doctype)
+import polarion_config as cfg  # instance/org profile
 
 REST = None
 # Column indices are resolved per checklist from its header row — see
@@ -92,6 +94,11 @@ def get_my_user():
     return json.loads(base64.urlsafe_b64decode(p)).get("sub")
 
 
+def wi_type(wi):
+    """The work item's type id (e.g. 'REVIEW')."""
+    return (wi.get("data", {}).get("attributes", {}) or {}).get("type", "")
+
+
 def wi_owners(wi):
     """Set of assigned reviewer + assignee user ids on the work item."""
     rel = wi.get("data", {}).get("relationships", {})
@@ -108,20 +115,47 @@ def wi_owners(wi):
 
 
 def fetch_wi(token, project, wi_id):
-    return polarion_rest.get(token, REST + f"/projects/{project}/workitems/{wi_id}?fields%5Bworkitems%5D=%40all")
+    return polarion_rest.get(
+        token, REST + f"/projects/{seg(project)}/workitems/{seg(wi_id)}?fields%5Bworkitems%5D=%40all")
 
 
-def patch_checklist(token, project, wi_id, new_html):
+def count_fails(htmlstr, roles):
+    """Failed items in this table -- every data row whose verdict reads 'Fail'.
+
+    Counts the WHOLE table, not just the rows this run wrote: a human-reviewed
+    row left untouched is still a failed item, and the field has to agree with
+    what a reader sees. Tolerates the emoji the column header names (🟥Fail).
+    """
+    i = roles["result"]
+    return sum(1 for m in data_row_matches(split_rows(htmlstr))
+               for c in [cells_text(m.group(0))]
+               if len(c) > i and re.sub(r"[^A-Za-z]", "", c[i] or "").lower() == "fail")
+
+
+def patch_checklist(token, project, wi_id, new_html, field="checklist",
+                    fail_field=None, fails=None):
+    """PATCH the checklist, and the failed-item count in the same request.
+
+    One request, so the count can never describe a table that was not written.
+    """
+    attrs = {field: {"type": "text/html", "value": new_html}}
+    if fail_field and fails is not None:
+        attrs[fail_field] = fails
     body = {"data": {"type": "workitems", "id": f"{project}/{wi_id}",
-                     "attributes": {"checklist": {"type": "text/html", "value": new_html}}}}
-    return polarion_rest.patch(token, REST + f"/projects/{project}/workitems/{wi_id}", body)
+                     "attributes": attrs}}
+    return polarion_rest.patch(token, REST + f"/projects/{seg(project)}/workitems/{seg(wi_id)}", body)
 
 
 def cells_text(tr_html):
-    """Return list of plain-text cell contents for a <tr> (td or th)."""
+    """Return list of plain-text cell contents for a <tr> (td or th).
+
+    Tags collapse to a SPACE, not to nothing, so that '<p>a</p><p>b</p>' reads
+    as 'a b' — the same way fetch_checklist.py's HTMLParser joins text chunks.
+    (Comparisons against fetched text additionally go through
+    checklist_columns.same_text, which ignores whitespace entirely.)"""
     out = []
     for m in re.finditer(r"<t[dh]\b[^>]*>(.*?)</t[dh]>", tr_html, flags=re.S | re.I):
-        txt = re.sub(r"<[^>]+>", "", m.group(1))
+        txt = re.sub(r"<[^>]+>", " ", m.group(1))
         out.append(html.unescape(re.sub(r"\s+", " ", txt)).strip())
     return out
 
@@ -130,32 +164,68 @@ def split_rows(htmlstr):
     return list(re.finditer(r"<tr\b.*?</tr>", htmlstr, flags=re.S | re.I))
 
 
+def is_header(tr_html):
+    return bool(re.search(r"<th\b", tr_html, flags=re.I))
+
+
+def data_row_indices(matches):
+    """Indices of the <tr>s that are checklist items: every row after the
+    first header row that does not itself carry a <th>.
+
+    One definition, used by inject, the lost-update check and validate alike
+    -- disagreeing copies of this predicate are what put fetch and the writer
+    out of step. Rows before the first header are preamble (four real
+    checklists open with a colspan'd note above the table), not items."""
+    out, seen = set(), False
+    for i, m in enumerate(matches):
+        if is_header(m.group(0)):
+            seen = True
+        elif seen:
+            out.add(i)
+    return out
+
+
+def data_row_matches(matches):
+    idx = data_row_indices(matches)
+    return [m for i, m in enumerate(matches) if i in idx]
+
+
 def header_cells(htmlstr):
     """Plain-text cells of the header row (the one carrying <th>), or None."""
     for m in split_rows(htmlstr):
-        if re.search(r"<th\b", m.group(0), flags=re.I):
+        if is_header(m.group(0)):
             return cells_text(m.group(0))
     return None
 
 
-def resolve_layout(original, filled):
+def resolve_layout(original, filled, rules=None):
     """(#0) Resolve column roles from the LIVE header, then compare them to the
     roles recorded at fetch time. Aborts rather than guessing an index."""
     hdr = header_cells(original)
     if not hdr:
         sys.exit("LAYOUT: checklist has no <th> header row — cannot resolve column roles; aborting")
     try:
-        roles = checklist_columns.resolve(hdr)
+        roles = checklist_columns.resolve(hdr, rules)
     except checklist_columns.LayoutError as e:
         sys.exit(f"LAYOUT: {e}; aborting (never guessing column positions)")
-    fetched = (filled.get("columns") or {}).get("roles")
+    cols = filled.get("columns")
+    fetched = (cols or {}).get("roles")
     if fetched:
         drift = checklist_columns.compare(fetched, roles)
         if drift:
             sys.exit("LAYOUT DRIFT since review: " + "; ".join(drift) + " — aborting")
+    elif cols is not None:
+        # The fetch emitted a columns block and left roles null: it could not
+        # read the header, or the checklist's tables disagree on the layout.
+        # Either way it has already established that no index describes this
+        # table. Resolving from the live header here would write by an index
+        # the fetch refused to trust -- into whichever table lost.
+        sys.exit("LAYOUT: the fetch could not resolve column roles"
+                 + (f" ({cols.get('error')})" if cols.get("error") else "")
+                 + " — aborting rather than writing by an index it refused")
     else:
-        print("  [warn] findings JSON carries no columns.roles; using the live header only",
-              file=sys.stderr)
+        print("  [warn] findings JSON carries no columns block (pre-layout-aware "
+              "run?); using the live header only", file=sys.stderr)
     print(f"layout OK: {checklist_columns.describe(roles)}")
     return roles
 
@@ -166,11 +236,16 @@ def inject(original, filled_rows, roles):
     because a human already reviewed them. Raises on row-count mismatch."""
     data_idx = [0]            # index into filled_rows
     skipped = []
+    seen_header = [False]
     fill_at = checklist_columns.fill_map(roles)     # {col index: finding key}
     guard_cols = (roles["defect_status"], roles["result"])
     def repl_tr(m):
         tr = m.group(0)
-        if re.search(r"<th\b", tr, flags=re.I):   # header row — leave as is
+        if is_header(tr):                 # header row — leave as is
+            seen_header[0] = True
+            return tr
+        if not seen_header[0]:
+            # preamble above the first header; see data_row_matches
             return tr
         i = data_idx[0]; data_idx[0] += 1
         if i >= len(filled_rows):
@@ -200,8 +275,17 @@ def validate(original, new, roles):
     o, n = split_rows(original), split_rows(new)
     assert len(o) == len(n), f"row count changed {len(o)}->{len(n)}"
     keep = checklist_columns.preserved(roles)       # template cols + defect status
+    data = data_row_indices(o)
     for i, (om, nm) in enumerate(zip(o, n)):
-        oc, nc = cells_text(om.group(0)), cells_text(nm.group(0))
+        ot, nt = om.group(0), nm.group(0)
+        if i not in data:
+            # header and preamble rows are never written. Byte-identical is a
+            # stronger statement than the per-column one below, and the only
+            # one that holds for a colspan'd note row, which legitimately has
+            # a single cell where the header has seven.
+            assert ot == nt, f"row {i} is not a checklist item but was modified"
+            continue
+        oc, nc = cells_text(ot), cells_text(nt)
         assert len(oc) == len(nc), f"row {i} col count changed"
         assert len(oc) == roles["ncols"], \
             f"row {i} has {len(oc)} cells, header has {roles['ncols']} — layout not uniform"
@@ -219,20 +303,28 @@ def lost_update_check(filled, current_rows, roles):
         print("  [warn] findings JSON carries no template_rows (pre-layout-aware run?); "
               "skipping lost-update check — structural validation still applies", file=sys.stderr)
         return
-    cur = [cells_text(m.group(0)) for m in current_rows if not re.search(r"<th\b", m.group(0), flags=re.I)]
+    cur = [cells_text(m.group(0)) for m in data_row_matches(current_rows)]
     if len(base) != len(cur):
         sys.exit(f"LOST-UPDATE: data row count differs (reviewed {len(base)} vs current {len(cur)}) — aborting")
     for i, (b, c) in enumerate(zip(base, cur)):
         for k in roles["template"]:
-            if (b[k] if k < len(b) else "") != (c[k] if k < len(c) else ""):
-                sys.exit(f"LOST-UPDATE: row {i} template col {k} changed since review — aborting")
+            # whitespace-insensitive: the two sides were parsed by different
+            # parsers (see checklist_columns.same_text)
+            if not checklist_columns.same_text(b[k] if k < len(b) else "",
+                                               c[k] if k < len(c) else ""):
+                sys.exit(f"LOST-UPDATE: row {i} template col {k} changed since review — aborting\n"
+                         f"  reviewed: {(b[k] if k < len(b) else '')[:80]!r}\n"
+                         f"  current : {(c[k] if k < len(c) else '')[:80]!r}")
 
 
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--project"); ap.add_argument("--review-wi")
     ap.add_argument("--filled", required=True, help="filled findings JSON (rows aligned to checklist)")
-    ap.add_argument("--checklist-field", default="checklist")
+    ap.add_argument("--checklist-field", default=None)
+    ap.add_argument("--profile", default="", help="config profile (default: matched by project)")
+    ap.add_argument("--review-type", default=None,
+                    help="work item type this script may write (default: profile's review type)")
     ap.add_argument("--dry-run", action="store_true")
     ap.add_argument("--from-file", default="", help="offline: use a cached @all dump instead of live fetch")
     args = ap.parse_args()
@@ -245,6 +337,11 @@ def main():
     project = args.project or filled.get("document", {}).get("project_id")
     review_wi = args.review_wi or filled.get("source_wi")
 
+    prof = cfg.profile_for(project_id=project, name=args.profile or None)
+    review_type = args.review_type or cfg.review_type(prof)
+    checklist_field = args.checklist_field or cfg.checklist_field(prof)
+    col_rules = cfg.column_rules(prof)
+
     if args.from_file:
         wi = json.load(open(args.from_file))
     else:
@@ -253,6 +350,16 @@ def main():
         global REST
         url, token = load_env(); REST = url + "/polarion/rest/v1"
         wi = fetch_wi(token, project, review_wi)             # re-fetch right before write (#2)
+
+    # (#6) type gate — this script only ever writes the checklist of a REVIEW work
+    # item. Nothing else is a legitimate target, so a mistyped --review-wi or a
+    # findings JSON pointing elsewhere aborts here instead of PATCHing a
+    # requirement/defect/whatever that happens to have a `checklist` field.
+    actual = wi_type(wi)
+    if actual != review_type:
+        sys.exit(f"TYPE: target {project}/{review_wi} is type '{actual or '(unknown)'}', "
+                 f"not '{review_type}' — refusing to write")
+    print(f"type OK: target is a '{actual}' work item")
 
     # (#5) ownership gate — only the assigned reviewer/assignee, and only when that
     # person IS the current user (PAT owner), may write.
@@ -264,8 +371,8 @@ def main():
         sys.exit(f"OWNERSHIP: current user '{me}' is not an assigned reviewer/assignee {sorted(owners)} — refusing to write")
     print(f"ownership OK: current user '{me}' is among the assigned reviewer/assignee")
 
-    original = wi["data"]["attributes"][args.checklist_field]["value"]
-    roles = resolve_layout(original, filled)                 # (#0)
+    original = wi["data"]["attributes"][checklist_field]["value"]
+    roles = resolve_layout(original, filled, col_rules)      # (#0)
     current_rows = split_rows(original)
     lost_update_check(filled, current_rows, roles)           # (#2)
 
@@ -275,15 +382,20 @@ def main():
     print(f"injection OK: {len(rows)} rows; template+defect-status preserved; only applicable/result/comment written")
     if skipped:
         print(f"human-reviewed guard: {len(skipped)} row(s) left untouched "
-              f"(defect-status or 판정 already filled) -> {written} row(s) written, rows {skipped} skipped")
+              f"(defect-status or result already filled) -> {written} row(s) written, rows {skipped} skipped")
     if written == 0:
         print("nothing to write: every row was already reviewed by a human — skipping PATCH")
         return
 
+    fail_field = cfg.fail_count_field(prof)
+    fails = count_fails(new_html, roles) if fail_field else None
+    if fail_field:
+        print(f"failed items: {fails} -> {fail_field}")
     if args.from_file or args.dry_run:
         print("[dry-run] not writing. new HTML length:", len(new_html))
         return
-    code = patch_checklist(token, project, review_wi, new_html)
+    code = patch_checklist(token, project, review_wi, new_html, checklist_field,
+                           fail_field, fails)
     print(f"PATCH {project}/{review_wi} checklist -> HTTP {code}")
 
 

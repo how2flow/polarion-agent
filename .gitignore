@@ -8,6 +8,12 @@
 **/logs/
 *.log
 
+# commit-msg hook output
+err_commit_msg.txt
+
+# Official template checklists, fetched live each run (never committed)
+.cache/
+
 # Generated review reports
 projects/*/out/
 

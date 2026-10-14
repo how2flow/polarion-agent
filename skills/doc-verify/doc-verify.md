@@ -12,7 +12,7 @@ given; do not call any `mcp__polarion__*` tool.
 - the **content snapshot** file (the reviewed document, produced by `doc-review`), and
 - the **findings JSON** file (from `doc-review`) — a filled checklist where each
   `results[]` entry carries the checklist `category` / `item` / `criteria` and
-  the reviewer's `applicable` (O/X), `result` (Pass/Fail/N/A), `evidence`,
+  the reviewer's `applicable` (O/X), `result` (🟩Pass/🟥Fail/N/A), `evidence`,
   `comment`.
 
 (The finding schema is the one defined in `skills/doc-review/requirements.md`.)
@@ -25,10 +25,11 @@ that criteria, not against an invented standard.
 1. **Re-locate the evidence** against the item's `criteria`. If the evidence
    isn't in the content, or the document already satisfies the criteria → the
    reviewer's call is unfounded → `verdict.status = "rejected"`.
-2. **Check the call vs the criteria.** If `result` (Pass/Fail/N/A) or
+2. **Check the call vs the criteria.** If `result` (🟩Pass/🟥Fail/N/A) or
    `applicable` (O/X) doesn't match what the criteria + evidence imply, correct
    it → `verdict.status = "adjusted"` (explain in `verdict.note`). Pay special
-   attention to the applicability of conditional (기능안전 / 사이버보안) items.
+   attention to the applicability of conditional items (those gated on
+   functional safety or cybersecurity being in scope).
 3. **ASPICE re-verification.** Beyond "is the evidence real", judge whether the
    call holds from an **ASPICE** perspective for this document type, applying the
    lens *to the checklist item* (do not invent criteria beyond the checklist):
@@ -58,6 +59,13 @@ that criteria, not against an invented standard.
 The full verified findings JSON (same schema; every finding now carries a
 `verdict`; keep rejected findings in the array so the report can show what was
 filtered). Write it to the path the caller gives.
+
+**Copy every top-level field through unchanged** — `document`, `checklist_source`,
+`source_wi`, `columns`, `template_rows`, `inspection_defects`, `template_check`
+and `template_sync` (when present). They are not yours to judge: the writer
+needs `columns` / `template_rows` to verify the layout, the report renders
+`template_check`, and `template_sync` is the only thing that tells the report a
+mismatch was already fixed. Dropping one silently breaks a downstream stage.
 
 Do **not** emit a separate summary / count block — the report computes counts
 directly from the per-item verdicts. (If you include any tally, it MUST exactly

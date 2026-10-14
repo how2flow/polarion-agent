@@ -43,26 +43,34 @@ Run the bundled script (it pulls raw data and emits a status; it does **not**
 decide criteria):
 ```
 python3 skills/doc-review/fetch_checklist.py \
-  --project <p> --space <s> --document <d> --doctype <type> \
+  --project <p> --space <s> --document <d> \
   [--review-wi <ALL review WI ids from Step 1, comma-separated>] \
   [--defect-wi <comma-separated Ins_defect ids you saw in Step 1>] \
   --out .review-checklist-<doctype>-<YYYYMMDD-HHMMSS>.json
 ```
 (Use `Bash date` for the timestamp. Pass `--review-wi` / `--defect-wi` when
-Step 1 already found those work items — more robust than the discovery query.)
+Step 1 already found those work items — more robust than the discovery query.
+Do **not** pass `--doctype`: the script reads the document's own type, which is
+what keys the template-currency check. Passing a different one is reported and
+ignored.)
 The output JSON also carries **`inspection_defects`** — the existing
 inspection-defect work items in the document (id / title / status / severity /
 description), an empty list when there are none.
 
 ## Step 3 — Confirm & choose the checklist (driven by `status` in the JSON)
 - **`status = "checklist-present"`** → use the checklist **as-is; do not edit or
-  "improve" it.** `rows[0]` is the column header; the rest are the items.
+  "improve" it.** **`template_rows` is the item list — one entry per row, and
+  exactly `data_row_count` of them.** Use it, not `rows`: `rows` is the whole
+  table, and a checklist may be several tables (so several header rows) and may
+  open with a note row above the first header. Neither is an item, and both are
+  already excluded from `template_rows`. `columns.header` is the header row.
   **The layout is doctype-specific — never assume column positions.** The fetch
   script already resolved them for you in `columns.roles`
   (`applicable` / `result` / `comment` / `defect_status` → column index, plus
   `template`). Two layouts seen so far:
-  - 7 columns: 분류 / 리뷰 항목 / 판정 기준 / 리뷰 대상 / 판정 결과 / 의견 / 결함 상태
-  - 6 columns (e.g. functional test specs): **no 분류 column** — leave each
+  - 7 columns: category / item / criteria / applicable / result / comment /
+    defect-status
+  - 6 columns (e.g. functional test specs): **no category column** — leave each
     finding's `category` empty rather than inventing one.
   If `columns.roles` is `null` (header not understood), say so in your output
   and continue review-only — write-back will refuse this checklist.
@@ -73,39 +81,89 @@ description), an empty list when there are none.
   edits made since the review. Do not re-type or summarize them.
 - **otherwise (`review-wi-no-checklist` / `no-review-wi`)** → there is no
   governed checklist; fall back **in this order**:
-  1. **Default template** — look for `skills/doc-review/schema/<doctype>.json`
-     (doctype = the document `type`, e.g. `ModuleRequirementsSpecification`,
-     `ModuleArchitecturalDesignSpecification`, `ModuleDetailedDesignSpecification`).
-     If it exists, use its `items` as the checklist (`checklist_source =
-     default-template`). **Do not edit it.**
-  2. **Made-by-agent** — only if there is **no template for this doctype**,
-     build an ASPICE-conformant checklist yourself, write it to
+  **`template_check.fallback` says which of these applies — read it, do not
+  infer from error text.** `"none"` → the document has its own checklist, so
+  none of this applies; `"template"` → **default template** below;
+  `"made-by-agent"` → **made-by-agent** below; `"stop"` → stop (see below).
+
+  1. **Default template** (`fallback = "template"`) — the fetch output carries
+     the official template's items in
+     **`template_check.template_checklist`** (`columns` + `rows` +
+     `template_rows` + `data_row_count`, same shape as a governed checklist;
+     `template_check.template` names its source document).
+     Use its **`template_rows`** as the checklist (`checklist_source =
+     default-template`) -- same rule as above, `rows` includes the headers.
+     **Do not edit them.** A template may have no `category` (the
+     functional-test layout has no category column) — leave it empty rather than
+     inventing one.
+     `template_checklist` is absent when the doctype has no official template,
+     **or when the document's project has no profile of its own** —
+     `template_check.error` says which (falling back to
+     `template_check.template.error` if that key is absent). Say so in your
+     output: the reader needs to know the review was measured against no
+     governed checklist at all.
+  2. **Made-by-agent** (`fallback = "made-by-agent"`) — no governed template is
+     available for this document: none is configured for the doctype, the
+     document has no type, the project has no profile, or the check was
+     disabled. `template_check.error` says which. Build an
+     ASPICE-conformant checklist yourself, write it to
      `.review-checklist-<doctype>-made-by-agent-<ts>.json`, and use that
      (`checklist_source = made-by-agent`).
-  Never improvise when a governed checklist **or a default template** exists.
+
+  **Stop instead of improvising when `fallback = "stop"`.** The governed
+  criteria could not be established: a template that exists was unreachable,
+  the document metadata could not be read, or the template configuration is
+  broken. The governed criteria are temporarily out of reach, not
+  absent, and a made-up checklist would be indistinguishable from a governed
+  review. Report `template_check.error` and stop; a later run will get the
+  template. Never improvise when a governed checklist or an official template
+  exists.
 
 ## Step 4 — Review
 For every checklist item, judge the document and fill:
-`리뷰 대상 (O/X)` (applicable?), `판정 (Pass/Fail)`, `의견` (comment), and
+`applicable` (O/X), `result` (🟩Pass/🟥Fail/N/A), `comment`, and
 `evidence` (an exact quote / concrete observation). Keep **all** items including
-conditional ones ("(기능안전 적용 시)…", "(사이버보안 적용 시)…"); decide
+conditional ones — those whose item text is gated on a condition, which on this
+ instance reads `(기능안전 적용 시)…` / `(사이버보안 적용 시)…`; decide
 applicability explicitly with a rationale. Ground every Fail in evidence; never
 invent.
 
-**Human-reviewed rows are off-limits.** If a data row already has a **판정
-(result)** or a **결함상태 (defect-status)** value, a human reviewed that row —
-do **not** re-review or propose overwriting it (leave its 판정/의견 as found).
+**A missing ASIL grade is a Fail, not an N/A.** Stating the grade is the
+baseline: **QM counts as stated, nothing stated does not.** So for a
+functional-safety item (`(기능안전 적용 시)…`, and any item whose criteria
+turns on an ASIL level), when the document and its linked requirements state no
+grade at all, the result is **Fail** — "ASIL 등급이 기재되어 있지 않음" is the
+finding. Do not mark it `N/A` on the grounds that no safety context was given;
+the absence of that context is itself what fails.
+Once a grade **is** stated, judge the item against it as normal — a stated `QM`
+may legitimately make a requirement not apply, and then `N/A` with that
+rationale is right. This rule is about ASIL only; cybersecurity items keep their
+own gate.
+
+**Human-reviewed rows are off-limits.** If a data row already has a **result**
+or a **defect-status** value, a human reviewed that row — do **not** re-review
+or propose overwriting it (leave its result/comment as found).
 This is enforced deterministically by `write_checklist.py` regardless (it skips
 such rows entirely), but respect it here too: still emit an entry for the row so
 the row count matches, carrying the values as found. A row with both cells empty
 is yours to review.
 
-**Language rule — write the review in English.** All text **you author**
-(`comment`, `evidence`, `applicable_reason`, and any note) must be in **English**,
-even though the document and checklist are Korean. Keep the checklist's
-`category` / `item` / `criteria` **verbatim** in their original language (do not
-translate the source checklist); quoted evidence may stay in the original
-language but your explanation around it is English.
+**Language rule.** **`comment` is written in Korean** — it is the one piece of
+prose that lands in Polarion, in the checklist's 리뷰어 의견 column, where
+Korean readers see it. Everything else you author (`evidence`,
+`applicable_reason`, any note, inspection-defect text) stays in **English**;
+it never leaves the local files.
+
+Keep the checklist's `category` / `item` / `criteria` **verbatim** (do not
+translate the source checklist), and quote evidence in the language it is
+written in.
+
+**Verdict tokens are fixed, and the header names them.** Write `result` as
+**`🟩Pass`** or **`🟥Fail`**, with the emoji, exactly as the column header
+`판정 결과 (🟩Pass/🟥Fail)` spells them — that is what the people who read and
+fill this column by hand use. An item that does not apply is **`N/A`** (no
+emoji; the header names no token for it). `applicable` stays exactly `O` / `X`.
+Never translate any of them.
 
 ## Step 5 — Inspection defects
 Use the `inspection_defects` list from the fetched JSON (existing defects; may be
@@ -136,10 +194,35 @@ empty):
 - The actual write/create is done by `write_defects.py` (deterministic); you only
   decide the action + content (title + description).
 
+## Step 6 — Template currency
+The fetched JSON carries `template_check`: this document's checklist diffed
+against the organization's official template. **Always copy the whole
+`template_check` block into your findings JSON**, whatever its status — the
+report renders several of them.
+
+When `template_sync` is present, read its **`synced`** field — it alone says
+whether anything was written:
+- **`synced: true`** — the fetch has already overwritten the checklist with the
+  template's table. The rows you were handed ARE the template's, and
+  `template_check` describes the state *before* the overwrite: report it as
+  resolved, not outstanding.
+- **`synced: false`** — nothing was written (`reason` says why; `--dry-run` is
+  one). The rows you were handed are the document's own, and any mismatch in
+  `template_check` is still outstanding. Never describe it as resolved.
+
+**Copy `template_sync` into your findings either way.**
+
+Otherwise call it out when `status` is `outdated` / `diverged` or `unknown`
+(the comparison could not run; `reason` says why).
+**Never review against the template directly, never add its items to your
+results by hand, and never treat a mismatch as a Fail.** Whatever table is in
+the fetched JSON is the yardstick.
+
 ## Output
 - the **content snapshot** (from Step 1), and
 - **findings JSON** = the filled checklist (one entry per item; no `verdict`),
-  carrying `columns` and `template_rows` copied verbatim from the fetched JSON.
+  carrying `columns`, `template_rows`, `template_check` and `template_sync`
+  (when the fetch emitted one) copied verbatim from the fetched JSON.
 - State which checklist path was used (`checklist_source`: **governed** /
   **default-template** / **made-by-agent**) — in the output and, downstream,
   the report header.
