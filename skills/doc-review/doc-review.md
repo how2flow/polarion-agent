@@ -56,10 +56,21 @@ description), an empty list when there are none.
 
 ## Step 3 — Confirm & choose the checklist (driven by `status` in the JSON)
 - **`status = "checklist-present"`** → use the checklist **as-is; do not edit or
-  "improve" it.** The first row is the column header (분류 / 리뷰 항목 / 판정
-  기준 / 리뷰 대상 / 판정 결과 / 의견 / 결함 상태) — use it to map columns.
-  **Confirm**: your item list count must match `item_count`; if it doesn't,
+  "improve" it.** `rows[0]` is the column header; the rest are the items.
+  **The layout is doctype-specific — never assume column positions.** The fetch
+  script already resolved them for you in `columns.roles`
+  (`applicable` / `result` / `comment` / `defect_status` → column index, plus
+  `template`). Two layouts seen so far:
+  - 7 columns: 분류 / 리뷰 항목 / 판정 기준 / 리뷰 대상 / 판정 결과 / 의견 / 결함 상태
+  - 6 columns (e.g. functional test specs): **no 분류 column** — leave each
+    finding's `category` empty rather than inventing one.
+  If `columns.roles` is `null` (header not understood), say so in your output
+  and continue review-only — write-back will refuse this checklist.
+  **Confirm**: your item list count must match `data_row_count`; if it doesn't,
   stop and report a mismatch (do not silently drop items).
+  **Copy `columns` and `template_rows` from the fetched JSON into your findings
+  JSON verbatim** — the writer uses them to verify the layout and to detect
+  edits made since the review. Do not re-type or summarize them.
 - **otherwise (`review-wi-no-checklist` / `no-review-wi`)** → there is no
   governed checklist; fall back **in this order**:
   1. **Default template** — look for `skills/doc-review/schema/<doctype>.json`
@@ -81,11 +92,13 @@ conditional ones ("(기능안전 적용 시)…", "(사이버보안 적용 시)�
 applicability explicitly with a rationale. Ground every Fail in evidence; never
 invent.
 
-**Human-reviewed rows are off-limits.** If a data row's 결함상태 (defect-status,
-the last column: open/closed) is **already filled**, a human already reviewed
-that row — do **not** re-review or propose overwriting it (leave its 판정/의견 as
-found). This is enforced deterministically by `write_checklist.py` regardless, but
-respect it here too. An empty 결함상태 means the row is yours to review.
+**Human-reviewed rows are off-limits.** If a data row already has a **판정
+(result)** or a **결함상태 (defect-status)** value, a human reviewed that row —
+do **not** re-review or propose overwriting it (leave its 판정/의견 as found).
+This is enforced deterministically by `write_checklist.py` regardless (it skips
+such rows entirely), but respect it here too: still emit an entry for the row so
+the row count matches, carrying the values as found. A row with both cells empty
+is yours to review.
 
 **Language rule — write the review in English.** All text **you author**
 (`comment`, `evidence`, `applicable_reason`, and any note) must be in **English**,
@@ -125,7 +138,8 @@ empty):
 
 ## Output
 - the **content snapshot** (from Step 1), and
-- **findings JSON** = the filled checklist (one entry per item; no `verdict`).
+- **findings JSON** = the filled checklist (one entry per item; no `verdict`),
+  carrying `columns` and `template_rows` copied verbatim from the fetched JSON.
 - State which checklist path was used (`checklist_source`: **governed** /
   **default-template** / **made-by-agent**) — in the output and, downstream,
   the report header.

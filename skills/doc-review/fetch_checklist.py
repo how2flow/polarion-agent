@@ -3,8 +3,15 @@
 
 Deterministic, vendor-neutral plumbing for the doc-review skill. It pulls raw
 data and emits a JSON file; it does NOT decide review criteria — doc-review (AI)
-interprets the JSON. Generic extraction only (HTML table -> rows); assigning
-column meaning is left to the AI.
+interprets the JSON. Generic extraction only (HTML table -> rows); judging the
+checklist content is left to the AI.
+
+Column ROLES, however, are resolved deterministically from the header row
+(`columns.roles`, via scripts/checklist_columns.py) because the layout is
+doctype-specific — 7 columns with 분류, 6 without — and write-back must never
+guess an index. `template_rows` carries the data rows verbatim so the writer can
+do a lost-update check against the original text rather than AI-paraphrased
+values.
 
 Decision tree (emitted as `status`):
   1. no REVIEW-type work item for the document        -> status="no-review-wi"      (+ doc reference)
@@ -28,6 +35,7 @@ from urllib import request, parse, error
 # polarion_rest is shared infra in <repo>/scripts — add it to the import path
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "scripts"))
 import polarion_rest  # shared REST helper with ALM-seat-limit retry
+import checklist_columns  # header-driven column roles (layout varies by doctype)
 
 REST = None  # set after URL resolved
 
@@ -94,11 +102,21 @@ def extract_checklist(wi_json, checklist_field="checklist"):
                                                           if isinstance(attrs.get("description"), dict) else "")}
     p = _Table(); p.feed(value)
     rows = [r for r in p.rows if any(c.strip() for c in r)]
-    return "checklist-present", {
+    payload = {
         "rows": rows,
-        "item_count": len(rows),
-        "checklist_text": detag(value),  # generic fallback for the AI
+        "item_count": len(rows),              # rows INCLUDING the header row
+        "data_row_count": max(len(rows) - 1, 0),  # actual checklist items
+        "template_rows": rows[1:],            # verbatim data rows -> lost-update basis
+        "checklist_text": detag(value),       # generic fallback for the AI
     }
+    # Column layout is doctype-specific (7 cols with 분류, 6 without) — resolve the
+    # role of each column from the header row instead of assuming indices.
+    try:
+        payload["columns"] = {"header": rows[0], "roles": checklist_columns.resolve(rows[0])}
+    except (IndexError, checklist_columns.LayoutError) as e:
+        payload["columns"] = {"header": rows[0] if rows else [], "roles": None,
+                              "error": str(e)}
+    return "checklist-present", payload
 
 
 def find_wis(token, project, space, document, wtype):
@@ -213,8 +231,12 @@ def main():
     text = json.dumps(out, ensure_ascii=False, indent=2)
     if args.out:
         open(args.out, "w").write(text)
+        cols = out.get("columns") or {}
+        layout = ("; layout: " + checklist_columns.describe(cols["roles"])) if cols.get("roles") \
+            else ("; LAYOUT UNRESOLVED: " + cols["error"]) if cols.get("error") else ""
         print(f"{out['status']} -> {args.out}"
-              + (f" ({out.get('item_count')} items)" if out.get("item_count") else ""))
+              + (f" ({out.get('data_row_count')} items)" if out.get("data_row_count") else "")
+              + layout)
     else:
         print(text)
 

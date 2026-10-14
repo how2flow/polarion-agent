@@ -114,7 +114,8 @@ verdict {status: confirmed|adjusted|rejected, confidence, note}.
   FROM results[] — by verdict (confirmed/adjusted/rejected) and by result
   (Fail/Pass/N/A). Do not trust any embedded summary; compute from the items.
 - Group confirmed+adjusted items by their 'category'; within a category order
-  Fail > Pass > N/A. For each show: result + verdict(status, confidence),
+  Fail > Pass > N/A. Some checklist layouts have no 분류 column — when every
+  'category' is empty, skip the grouping and list the items in checklist order. For each show: result + verdict(status, confidence),
   applicable, criteria, evidence, comment, verifier note, and any work-item ids
   cited in the text. There is no severity field — do not invent one.
 - A separate '## Rejected (filtered by verify)' section with reasons.

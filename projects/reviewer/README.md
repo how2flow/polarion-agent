@@ -23,6 +23,9 @@ un-owned or drifted target aborts instead of writing.
 - **report** — renders the verified findings into a Markdown report.
 - **write checklist** (`write_checklist.py`) — surgically injects 리뷰대상/판정/
   의견 into the REVIEW work item's `checklist` field (template + 결함상태 preserved).
+  Column positions are resolved from the checklist's own header row, so both the
+  7-column (분류 …) and 6-column (functional test spec) layouts are handled; an
+  unrecognized header aborts the write rather than guessing.
 - **write defects** (`write_defects.py`) — fills/append/skips inspection-defect
   content into existing `Ins_defect` work items per the reviewer's decision.
 
@@ -68,9 +71,12 @@ out/                 # generated reports, review-<timestamp>.md (created on firs
 ## Notes
 
 - **Write-back is ON by default.** The pipeline writes the filled checklist and
-  inspection-defect content back to Polarion, each guarded by an ownership gate
-  (your PAT user must be the document's assigned reviewer) + lost-update check.
-  Use `--no-write` for review-only, `--dry-run` to preview writes.
+  inspection-defect content back to Polarion, each guarded by a layout gate
+  (column roles re-resolved from the live header and compared to the review-time
+  roles), an ownership gate (your PAT user must be the document's assigned
+  reviewer), a lost-update check, and a human-reviewed guard (a row whose 판정 or
+  결함상태 is already filled is never touched). Use `--no-write` for review-only,
+  `--dry-run` to preview writes.
 - **Seat-efficient**: only Stage 1 (and the write stages) touch Polarion; verify
   and report do not. If seats are full (HTTP 401 "limit of 15 concurrent users"),
   retry later.

@@ -4,20 +4,27 @@ REVIEW work item, by SURGICALLY injecting the reviewer values into the original
 `checklist` HTML (preserving everything else). Deterministic plumbing; the AI
 only supplies the cell values (in the filled findings JSON).
 
-What it fills: per data row, the reviewer columns applicable(O/X) / result(Pass/Fail) /
-comment — by index [3,4,5]. It does NOT touch the template columns
-(category/item/criteria = [0,1,2]) or defect-status([6], left to humans).
+What it fills: per data row, the reviewer columns applicable(O/X) / result(Pass/Fail)
+/ comment. Their indices are NOT hardcoded — the checklist layout is
+doctype-specific (7 columns with 분류, 6 without), so every column's role is
+resolved from the header row via scripts/checklist_columns.py. Template columns
+and defect-status (human-owned) are never touched.
 
 Safety:
-  (#2 lost-update) re-fetches the work item right before writing and verifies
-       the template columns are unchanged vs what was reviewed; aborts on drift.
+  (#0 layout) column roles are resolved from the LIVE header at write time and
+       compared against the roles recorded at fetch time; an unresolvable header
+       or any role that moved aborts the write (never falls back to a guess).
+  (#2 lost-update) re-fetches the work item right before writing and verifies the
+       template columns still match `template_rows` (verbatim text captured at
+       fetch time); aborts on drift.
   (#3 structural) after injection, re-parses and asserts same row/col count and
-       that columns [0,1,2,6] are byte-equal to the source; only [3,4,5] differ.
+       that template + defect-status columns are byte-equal to the source; only
+       the three reviewer columns differ.
   (#4) defect-status column is never written.
-  (#5 human-reviewed guard) a data row whose defect-status (open/closed) is
-       already filled was reviewed by a human — that row is left ENTIRELY
-       untouched (its applicable/result/comment are never overwritten).
-  (#1 dry-run) --dry-run prints what would change and writes nothing.
+  (#5 human-reviewed guard) a data row whose defect-status (open/closed) OR
+       result (Pass/Fail) is already filled was reviewed by a human — that row is
+       left ENTIRELY untouched (its applicable/result/comment are never
+       overwritten). To re-review such a row, clear those cells in Polarion.
 
 Auth: POLARION_URL + POLARION_TOKEN (env or <repo>/.env).
 
@@ -31,22 +38,19 @@ from urllib import request, error
 # polarion_rest is shared infra in <repo>/scripts — add it to the import path
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "scripts"))
 import polarion_rest  # shared REST helper with ALM-seat-limit retry
+import checklist_columns  # header-driven column roles (layout varies by doctype)
 
 REST = None
-FILL_COLS = [3, 4, 5]          # applicable / result / comment
-TEMPLATE_COLS = [0, 1, 2]      # category / item / criteria  (validate: must stay byte-identical in HTML)
-KEEP_COLS = [6]                # defect-status (left to humans)
-# defect-status (open/closed) is human-owned and the AI review never writes it.
-# So a data row where this column is already filled means a human already
-# reviewed that row — we skip it entirely (never overwrite applicable/result/comment).
-HUMAN_REVIEW_COL = 6
-# lost-update compares row COUNT + only the short, verbatim-reproduced category (col 0).
-# item (col 1) and criteria (col 2) can be long and get paraphrased/truncated by
-# the AI in results[], so comparing them against the live checklist yields false
-# "drift". Count + category-sequence catches insert/delete/cross-category reorder;
-# structural integrity of what we actually write is enforced separately by
-# validate() (live-vs-live HTML: cols 0/1/2/6 stay byte-identical, only 3/4/5 change).
-LU_COLS = [0]
+# Column indices are resolved per checklist from its header row — see
+# scripts/checklist_columns.py. Nothing about the layout is hardcoded here.
+#
+# defect-status (open/closed) is human-owned and the review never writes it. A
+# data row where that column — or the result column — is already filled means a
+# human already reviewed the row, so it is skipped entirely.
+#
+# lost-update compares the live template columns against `template_rows`, the
+# verbatim rows captured by fetch_checklist.py. (It must NOT compare against
+# results[], whose text the AI may paraphrase — that yields false drift.)
 SPAN = ("<span style=\"font-size: 10pt;font-family: &#39;Segoe UI&#39;, Selawik, "
         "&#39;Open Sans&#39;, sans-serif;line-height: 1.5;\">{}</span>")
 
@@ -126,12 +130,44 @@ def split_rows(htmlstr):
     return list(re.finditer(r"<tr\b.*?</tr>", htmlstr, flags=re.S | re.I))
 
 
-def inject(original, filled_rows):
+def header_cells(htmlstr):
+    """Plain-text cells of the header row (the one carrying <th>), or None."""
+    for m in split_rows(htmlstr):
+        if re.search(r"<th\b", m.group(0), flags=re.I):
+            return cells_text(m.group(0))
+    return None
+
+
+def resolve_layout(original, filled):
+    """(#0) Resolve column roles from the LIVE header, then compare them to the
+    roles recorded at fetch time. Aborts rather than guessing an index."""
+    hdr = header_cells(original)
+    if not hdr:
+        sys.exit("LAYOUT: checklist has no <th> header row — cannot resolve column roles; aborting")
+    try:
+        roles = checklist_columns.resolve(hdr)
+    except checklist_columns.LayoutError as e:
+        sys.exit(f"LAYOUT: {e}; aborting (never guessing column positions)")
+    fetched = (filled.get("columns") or {}).get("roles")
+    if fetched:
+        drift = checklist_columns.compare(fetched, roles)
+        if drift:
+            sys.exit("LAYOUT DRIFT since review: " + "; ".join(drift) + " — aborting")
+    else:
+        print("  [warn] findings JSON carries no columns.roles; using the live header only",
+              file=sys.stderr)
+    print(f"layout OK: {checklist_columns.describe(roles)}")
+    return roles
+
+
+def inject(original, filled_rows, roles):
     """filled_rows: list of dicts with applicable/result/comment, aligned to DATA rows.
     Returns (new_html, skipped_idx). skipped_idx = data-row indices left untouched
-    because a human already reviewed them (defect-status filled). Raises on row-count mismatch."""
+    because a human already reviewed them. Raises on row-count mismatch."""
     data_idx = [0]            # index into filled_rows
     skipped = []
+    fill_at = checklist_columns.fill_map(roles)     # {col index: finding key}
+    guard_cols = (roles["defect_status"], roles["result"])
     def repl_tr(m):
         tr = m.group(0)
         if re.search(r"<th\b", tr, flags=re.I):   # header row — leave as is
@@ -139,22 +175,19 @@ def inject(original, filled_rows):
         i = data_idx[0]; data_idx[0] += 1
         if i >= len(filled_rows):
             raise SystemExit(f"more data rows than filled entries ({i} >= {len(filled_rows)})")
-        # (#5) human-reviewed guard: defect-status (open/closed) already filled -> a
-        # human owns this row; leave it entirely untouched.
+        # (#5) human-reviewed guard: defect-status (open/closed) or the verdict
+        # itself already filled -> a human owns this row; leave it untouched.
         cells = cells_text(tr)
-        if len(cells) > HUMAN_REVIEW_COL and cells[HUMAN_REVIEW_COL].strip():
+        if any(len(cells) > c and cells[c].strip() for c in guard_cols):
             skipped.append(i)
             return tr
-        vals = {3: filled_rows[i].get("applicable", ""),
-                4: filled_rows[i].get("result", ""),
-                5: filled_rows[i].get("comment", "")}
         col = [0]
         def repl_td(tdm):
             c = col[0]; col[0] += 1
-            if c not in FILL_COLS:
+            if c not in fill_at:
                 return tdm.group(0)
             open_tag = re.match(r"<td\b[^>]*>", tdm.group(0), flags=re.I).group(0)
-            v = html.escape(str(vals[c] or ""))
+            v = html.escape(str(filled_rows[i].get(fill_at[c], "") or ""))
             return open_tag + (SPAN.format(v) if v else "") + "</td>"
         return re.sub(r"<td\b[^>]*>.*?</td>", repl_td, tr, flags=re.S | re.I)
     new = re.sub(r"<tr\b.*?</tr>", repl_tr, original, flags=re.S | re.I)
@@ -163,36 +196,36 @@ def inject(original, filled_rows):
     return new, skipped
 
 
-def validate(original, new):
+def validate(original, new, roles):
     o, n = split_rows(original), split_rows(new)
     assert len(o) == len(n), f"row count changed {len(o)}->{len(n)}"
+    keep = checklist_columns.preserved(roles)       # template cols + defect status
     for i, (om, nm) in enumerate(zip(o, n)):
         oc, nc = cells_text(om.group(0)), cells_text(nm.group(0))
         assert len(oc) == len(nc), f"row {i} col count changed"
-        for c in TEMPLATE_COLS + KEEP_COLS:
-            if c < len(oc):
-                assert oc[c] == nc[c], f"row {i} col {c} changed (must be preserved): {oc[c]!r} -> {nc[c]!r}"
+        assert len(oc) == roles["ncols"], \
+            f"row {i} has {len(oc)} cells, header has {roles['ncols']} — layout not uniform"
+        for c in keep:
+            assert oc[c] == nc[c], f"row {i} col {c} changed (must be preserved): {oc[c]!r} -> {nc[c]!r}"
     return True
 
 
-def lost_update_check(filled, current_rows):
-    """Compare template cols of the reviewed checklist (filled['template_rows'])
-    to the current work item. Abort on drift."""
+def lost_update_check(filled, current_rows, roles):
+    """Compare the template columns of the reviewed checklist
+    (filled['template_rows'], captured verbatim by fetch_checklist.py) to the
+    current work item. Abort on drift."""
     base = filled.get("template_rows")
     if not base:
-        res = filled.get("results") or []
-        if res and any("category" in r for r in res):
-            base = [[r.get("category", ""), r.get("item", ""), r.get("criteria", "")] for r in res]
-    if not base:
-        print("  [warn] no template_rows/results categories; skipping lost-update check", file=sys.stderr)
+        print("  [warn] findings JSON carries no template_rows (pre-layout-aware run?); "
+              "skipping lost-update check — structural validation still applies", file=sys.stderr)
         return
     cur = [cells_text(m.group(0)) for m in current_rows if not re.search(r"<th\b", m.group(0), flags=re.I)]
     if len(base) != len(cur):
         sys.exit(f"LOST-UPDATE: data row count differs (reviewed {len(base)} vs current {len(cur)}) — aborting")
     for i, (b, c) in enumerate(zip(base, cur)):
-        for k in LU_COLS:
+        for k in roles["template"]:
             if (b[k] if k < len(b) else "") != (c[k] if k < len(c) else ""):
-                sys.exit(f"LOST-UPDATE: row {i} id col {k} changed since review — aborting")
+                sys.exit(f"LOST-UPDATE: row {i} template col {k} changed since review — aborting")
 
 
 def main():
@@ -232,16 +265,17 @@ def main():
     print(f"ownership OK: current user '{me}' is among the assigned reviewer/assignee")
 
     original = wi["data"]["attributes"][args.checklist_field]["value"]
+    roles = resolve_layout(original, filled)                 # (#0)
     current_rows = split_rows(original)
-    lost_update_check(filled, current_rows)                  # (#2)
+    lost_update_check(filled, current_rows, roles)           # (#2)
 
-    new_html, skipped = inject(original, rows)               # (#4: only cols 3,4,5; #5: skip human-reviewed)
-    validate(original, new_html)                             # (#3)
+    new_html, skipped = inject(original, rows, roles)        # (#4 keep cols; #5 skip human-reviewed)
+    validate(original, new_html, roles)                      # (#3)
     written = len(rows) - len(skipped)
     print(f"injection OK: {len(rows)} rows; template+defect-status preserved; only applicable/result/comment written")
     if skipped:
         print(f"human-reviewed guard: {len(skipped)} row(s) left untouched "
-              f"(defect-status already filled) -> {written} row(s) written, rows {skipped} skipped")
+              f"(defect-status or 판정 already filled) -> {written} row(s) written, rows {skipped} skipped")
     if written == 0:
         print("nothing to write: every row was already reviewed by a human — skipping PATCH")
         return
